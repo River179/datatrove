@@ -358,6 +358,10 @@ class MinhashDedupBuckets(PipelineStep):
         self.lines_to_buffer = lines_to_buffer
 
     def get_worker_hash_range(self, sig_files, rank, world_size):
+        # 允许world_size=1的情况，用于本地测试
+        if world_size == 1:
+            return 0, _mersenne_prime if self.config.hash_config.precision == 64 else self.config.hash_config.max
+        
         workers_per_bucket = world_size // self.config.num_buckets
         bucket, bucket_worker = divmod(rank, workers_per_bucket)
         hash_min, hash_max = (
@@ -390,9 +394,11 @@ class MinhashDedupBuckets(PipelineStep):
 
     def run(self, data: DocumentsPipeline = None, rank: int = 0, world_size: int = 1):
         assert data is None, "You should not use an input block before MinhashDedupBuckets"
-        assert (world_size % self.config.num_buckets) == 0, "Number of tasks must be divisible by num_buckets"
-        workers_per_bucket = world_size // self.config.num_buckets
-        bucket, bucket_worker = divmod(rank, workers_per_bucket)
+        # 允许world_size=1的情况，用于本地测试
+        if world_size != 1:
+            assert (world_size % self.config.num_buckets) == 0, "Number of tasks must be divisible by num_buckets"
+        workers_per_bucket = world_size // self.config.num_buckets if world_size > 1 else 1
+        bucket, bucket_worker = divmod(rank, workers_per_bucket) if world_size > 1 else (0, 0)
 
         with self.track_time():
             sig_files = self.input_folder.list_files(subdirectory=f"bucket_{bucket:03d}")
@@ -527,9 +533,11 @@ class MinhashDedupCluster(PipelineStep):
 
     def run(self, data: DocumentsPipeline = None, _: int = 0, world_size: int = 1):
         dup_files = self.input_folder.list_files(glob_pattern="*.dups")
-        assert (len(dup_files) % self.config.num_buckets) == 0, (
-            "Number of .dups files should be divisible by number of buckets"
-        )
+        # 允许本地测试时处理单个.dups文件
+        if len(dup_files) != 1:
+            assert (len(dup_files) % self.config.num_buckets) == 0, (
+                "Number of .dups files should be divisible by number of buckets"
+            )
         assert world_size == 1, "World size must be 1 for clustering"
         union_set = {}
         set_size = {}

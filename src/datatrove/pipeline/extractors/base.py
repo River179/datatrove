@@ -53,8 +53,13 @@ class BaseExtractor(PipelineStep):
                 self.stat_update(StatHints.total)
                 with self.track_time():
                     try:
-                        doc.text = extractor.process_document(doc.text, self.extract)
-                        self.stat_update("extracted")
+                        extracted_text = extractor.process_document(doc.text, self.extract)
+                        if extracted_text:
+                            doc.text = extracted_text
+                            self.stat_update("extracted")
+                        else:
+                            self.stat_update("empty_extract")
+                            continue
                     except TimeoutError:
                         self.stat_update("timeout")
                         logger.warning("⏰ Timeout while cleaning record text. Skipping record.")
@@ -99,15 +104,27 @@ class ExtractorSandbox:
 
     def _cleanup_process(self):
         if self.process is not None:
-            self.parent_conn.close()
-            self.child_conn.close()
-            self.process.terminate()
-            self.process.join(timeout=0.1)  # small clean up window
-            if self.process.is_alive():
-                self.process.kill()
-            self.process = None
-            self.parent_conn = None
-            self.child_conn = None
+            try:
+                if self.parent_conn:
+                    self.parent_conn.close()
+                if self.child_conn:
+                    self.child_conn.close()
+                try:
+                    self.process.terminate()
+                except AttributeError:
+                    pass  # 忽略NoneType错误，进程可能已经死亡
+                self.process.join(timeout=0.1)  # small clean up window
+                if self.process.is_alive():
+                    try:
+                        self.process.kill()
+                    except AttributeError:
+                        pass  # 忽略NoneType错误
+            except Exception as e:
+                pass  # 忽略任何清理错误
+            finally:
+                self.process = None
+                self.parent_conn = None
+                self.child_conn = None
 
     def _worker(self, conn, extract_fn):
         # Ensure this process is killed first
